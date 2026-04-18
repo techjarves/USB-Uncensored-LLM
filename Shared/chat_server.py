@@ -34,6 +34,9 @@ except ImportError:
 # ── Configuration ──────────────────────────────────────────────
 CHAT_SERVER_PORT = 3333
 OLLAMA_HOST = "http://127.0.0.1:11434"
+LLAMA_CPP_MODE = "--llama-cpp" in sys.argv
+if LLAMA_CPP_MODE:
+    OLLAMA_HOST = "http://127.0.0.1:8080"
 
 # Always resolve paths relative to THIS script's location (the USB drive)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -386,12 +389,36 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
 
         try:
+            # Handle fake /api/tags for llama.cpp mode
+            if LLAMA_CPP_MODE and ollama_path == "/api/tags":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"models":[{"name": "local-llama-model"}]}).encode())
+                return
+
+            if LLAMA_CPP_MODE and ollama_path == "/api/chat":
+                # Translate Ollama payload -> OpenAI payload for llama-server
+                ollama_req = json.loads(body) if body else {}
+                openai_req = {
+                    "messages": ollama_req.get("messages", []),
+                    "stream": True,
+                    "temperature": ollama_req.get("options", {}).get("temperature", 0.7)
+                }
+                target_url = OLLAMA_HOST + "/v1/chat/completions"
+                body = json.dumps(openai_req).encode()
+
             req = urllib.request.Request(
                 target_url,
                 data=body,
                 method=method,
                 headers={"Content-Type": self.headers.get("Content-Type", "application/json")}
             )
+
+            # Optional: pass Authorization header if present
+            if "Authorization" in self.headers:
+                req.add_header("Authorization", self.headers.get("Authorization"))
 
             response = urllib.request.urlopen(req, timeout=600)
 
@@ -412,9 +439,32 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 chunk = response.read(4096)
                 if not chunk:
                     break
-                self.wfile.write(chunk)
-                if is_stream:
-                    self.wfile.flush()
+                
+                # If bridging llama.cpp SSE to Ollama JSONL
+                if LLAMA_CPP_MODE and is_stream:
+                    text = chunk.decode(errors="ignore")
+                    lines = text.split("\n")
+                    for line in lines:
+                        if line.startswith("data: "):
+                            data = line[6:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                j = json.loads(data)
+                                if "choices" in j and len(j["choices"]) > 0:
+                                    delta = j["choices"][0].get("delta", {})
+                                    out = {
+                                        "message": {"role": "assistant", "content": delta.get("content", "")},
+                                        "done": False
+                                    }
+                                    self.wfile.write((json.dumps(out) + "\n").encode())
+                                    self.wfile.flush()
+                            except:
+                                pass
+                else:
+                    self.wfile.write(chunk)
+                    if is_stream:
+                        self.wfile.flush()
 
         except urllib.error.HTTPError as e:
             self.send_response(e.code)
@@ -482,7 +532,9 @@ def main():
     print()
     print(f"  Local Access:    http://localhost:{CHAT_SERVER_PORT}")
     print(f"  Network Access:  http://{local_ip}:{CHAT_SERVER_PORT}   <-- Use this on phone/other PC!")
-    print(f"  Ollama Proxy:    {OLLAMA_HOST}")
+    print(f"  Ollama/Llama Proxy: {OLLAMA_HOST}")
+    if LLAMA_CPP_MODE:
+        print("  Running in LLAMA_CPP_MODE (Translating API requests)")
     print()
     print("  All chats auto-save to the USB drive!")
     print("  Press Ctrl+C to shut down.")

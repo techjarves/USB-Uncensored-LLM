@@ -4,6 +4,10 @@
 
 With a unified architecture, you can initialize your AI models once and choose to keep them on your system or carry them with you across Windows, macOS, and Linux PCs.
 
+🎥 **Watch the Setup & Demo Video:** [https://youtu.be/60PSXsoXc8A](https://youtu.be/60PSXsoXc8A)
+
+[![USB-Uncensored-LLM Setup & Demo](https://img.youtube.com/vi/60PSXsoXc8A/maxresdefault.jpg)](https://youtu.be/60PSXsoXc8A)
+
 ## 🚀 Core Features
 * **Zero Dependency Setup:** Ships with portable Python and isolated engine binaries. No system permissions, registry edits, or package managers required.
 * **Cross-Platform Interoperability:** Uses a intelligent `Shared` volume system — download your 5GB+ AI models *once*, and use them natively on Windows, macOS, and Linux without duplication.
@@ -26,6 +30,7 @@ The project is structured to strictly isolate operating system executables while
 
 ```text
 [Portable USB Drive]
+ ├── 📁 Android    # Native Android (Termux) installers & launchers
  ├── 📁 Linux      # Native Ubuntu/Debian offline installers & launchers
  ├── 📁 Mac        # Native macOS offline installers & launchers
  ├── 📁 Windows    # Native Windows offline automatic UI menus
@@ -56,6 +61,7 @@ Depending on the computer you are currently plugged into, navigate into the resp
 * **Windows:** Double-click `Windows/install.bat`
 * **macOS:** Open Terminal, drag in `Mac/install.command`, and press Enter.
 * **Linux:** Run `bash Linux/install.sh`
+* **Android:** Open Termux, run `bash Android/install.sh` (see Android section below)
 
 > **Note:** Initializing simply downloads the tiny 50MB execution engine specific to that computer to the `Shared/bin` folder. 
 
@@ -68,6 +74,7 @@ Open the respective OS folder and run the `start` script:
 * **Windows:** `Windows/start-fast-chat.bat`
 * **macOS:** `Mac/start.command`
 * **Linux:** `bash Linux/start.sh`
+* **Android:** `bash Android/start.sh` (in Termux)
 
 The engine will spin up securely in the background, and your default web browser will automatically open the locally-served Chat UI.
 
@@ -84,6 +91,38 @@ While this project is optimized for USB portability, it works beautifully as a l
 5.  Run **`start-fast-chat.bat`** to begin.
 
 *Benefit:* Running from an internal SSD is significantly faster than a USB drive, resulting in near-instant AI model loading!
+
+---
+
+## 📱 Android Native (Termux)
+Run the AI engine **directly on your Android phone or tablet** — no PC required!
+
+### Requirements
+- **Termux** installed from [F-Droid](https://f-droid.org/en/packages/com.termux/) (NOT the Play Store — it's outdated)
+- **6 GB+ RAM** (8 GB+ recommended). Only the 2B model runs well on 6 GB devices.
+- **WiFi or mobile data** for initial setup (downloading engine + models)
+- **ARM64 processor** (virtually all modern Android phones/tablets)
+
+### Setup
+1. Copy the USB-Uncensored-LLM folder to your Android device (via USB OTG, file transfer, or `git clone`)
+2. Open **Termux** and navigate to the project folder
+3. Run: `bash Android/install.sh`
+4. Select your model (Gemma 2 2B recommended for most Android devices)
+5. Wait for downloads to complete — **keep Termux in the foreground!**
+
+### Launch
+```bash
+bash Android/start.sh
+```
+The AI engine starts and Chrome opens automatically with the chat UI.
+
+### Android Performance Tips
+- **Run `termux-wake-lock`** before starting — prevents Android from killing the process
+- **Keep Termux in the foreground** for best performance
+- **Close other apps** to free RAM for the AI model
+- **Use the 2B model** on devices with less than 12 GB RAM
+- **Plug in your charger** — LLM inference drains battery fast
+- Expect **~3-10 tokens/sec** on the 2B model (vs 30-50+ on a PC with GPU)
 
 ---
 
