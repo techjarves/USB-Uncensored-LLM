@@ -399,7 +399,7 @@ Write-Host "      Saved model list to installed-models.txt" -ForegroundColor Dar
 # STEP 6: Download Ollama (the AI engine)
 # =================================================================
 Write-Host ""
-Write-Host "[7/7] Downloading Ollama AI Engine (Windows)..." -ForegroundColor Yellow
+Write-Host "[6/7] Downloading Ollama AI Engine (Windows)..." -ForegroundColor Yellow
 $OllamaURL  = "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 $OllamaDest = "$USB_Drive\Shared\bin\ollama-windows-amd64.zip"
 $TempOllamaDir = "$USB_Drive\Shared\bin\temp_ollama"
@@ -436,7 +436,7 @@ if (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe") {
 # STEP 7: IMPORT ALL SELECTED MODELS INTO OLLAMA ENGINE
 # =================================================================
 Write-Host ""
-Write-Host "[6/7] Importing AI models into the Ollama engine..." -ForegroundColor Yellow
+Write-Host "[7/7] Importing AI models into the Ollama engine..." -ForegroundColor Yellow
 
 if (-Not (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe")) {
     Write-Host "      ERROR: Ollama not found! Cannot import models." -ForegroundColor Red
