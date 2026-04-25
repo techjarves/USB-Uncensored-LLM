@@ -129,7 +129,7 @@ if ($freeGB -gt 0) {
 # =================================================================
 # STEP 1: MODEL SELECTION MENU
 # =================================================================
-Write-Host "[1/6] Choose your AI model(s):" -ForegroundColor Yellow
+Write-Host "[1/7] Choose your AI model(s):" -ForegroundColor Yellow
 Write-Host ""
 
 foreach ($m in $ModelCatalog) {
@@ -325,16 +325,53 @@ Write-Host ""
 # =================================================================
 # STEP 2: Create folder structure
 # =================================================================
-Write-Host "[2/6] Verifying USB folder structure..." -ForegroundColor Yellow
+Write-Host "[2/7] Verifying USB folder structure..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path "$USB_Drive\Shared\models" | Out-Null
 New-Item -ItemType Directory -Force -Path "$USB_Drive\Shared\bin" | Out-Null
+New-Item -ItemType Directory -Force -Path "$USB_Drive\Shared\vendor" | Out-Null
 Write-Host "      Done." -ForegroundColor Green
 
 # =================================================================
-# STEP 3: Download selected AI models
+# STEP 3: Download optional UI vendor assets for offline mode
 # =================================================================
 Write-Host ""
-Write-Host "[3/6] Downloading AI Model(s)..." -ForegroundColor Yellow
+Write-Host "[4/7] Downloading UI assets (offline markdown/pdf/fonts)..." -ForegroundColor Yellow
+
+$vendorDir = "$USB_Drive\Shared\vendor"
+$vendorAssets = @(
+    @{ Name = "marked.min.js"; Url = "https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" },
+    @{ Name = "highlight.min.js"; Url = "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js" },
+    @{ Name = "highlight-github-dark.min.css"; Url = "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/styles/github-dark.min.css" },
+    @{ Name = "pdf.min.mjs"; Url = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs" },
+    @{ Name = "pdf.worker.min.mjs"; Url = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs" },
+    @{ Name = "Inter-Regular.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-400-normal.woff2" },
+    @{ Name = "Inter-Medium.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-500-normal.woff2" },
+    @{ Name = "Inter-SemiBold.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-600-normal.woff2" },
+    @{ Name = "Inter-Bold.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-700-normal.woff2" },
+    @{ Name = "JetBrainsMono-Regular.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-400-normal.woff2" },
+    @{ Name = "JetBrainsMono-Medium.woff2"; Url = "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-500-normal.woff2" }
+)
+
+foreach ($asset in $vendorAssets) {
+    $dest = Join-Path $vendorDir $asset.Name
+    Write-Host "      -> $($asset.Name)" -ForegroundColor DarkGray
+    try {
+        curl.exe -L --ssl-no-revoke --silent --show-error $asset.Url -o $dest
+        if (-Not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1024) {
+            throw "Downloaded file missing/too small"
+        }
+    } catch {
+        if (Test-Path $dest) { Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue }
+        Write-Host "         WARNING: Could not fetch $($asset.Name). UI will fallback when online." -ForegroundColor Yellow
+    }
+}
+Write-Host "      UI asset bootstrap complete." -ForegroundColor Green
+
+# =================================================================
+# STEP 4: Download selected AI models
+# =================================================================
+Write-Host ""
+Write-Host "[5/7] Downloading AI Model(s)..." -ForegroundColor Yellow
 
 $downloadErrors = @()
 $modelIndex = 0
@@ -395,10 +432,10 @@ foreach ($m in $SelectedModels) {
 }
 
 # =================================================================
-# STEP 4: Create Modelfile configuration for each model
+# STEP 5: Create Modelfile configuration for each model
 # =================================================================
 Write-Host ""
-Write-Host "[4/6] Creating AI model configurations..." -ForegroundColor Yellow
+Write-Host "[6/7] Creating AI model configurations..." -ForegroundColor Yellow
 
 foreach ($m in $SelectedModels) {
     $modelfilePath = "$USB_Drive\Shared\models\Modelfile-$($m.Local)"
@@ -428,10 +465,10 @@ Set-Content -Path "$USB_Drive\Shared\models\installed-models.txt" -Value ($insta
 Write-Host "      Saved model list to installed-models.txt" -ForegroundColor DarkGray
 
 # =================================================================
-# STEP 5: Download Ollama (the AI engine)
+# STEP 6: Download Ollama (the AI engine)
 # =================================================================
 Write-Host ""
-Write-Host "[5/6] Downloading Ollama AI Engine (Windows)..." -ForegroundColor Yellow
+Write-Host "[7/7] Downloading Ollama AI Engine (Windows)..." -ForegroundColor Yellow
 $OllamaURL  = "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 $OllamaDest = "$USB_Drive\Shared\bin\ollama-windows-amd64.zip"
 $TempOllamaDir = "$USB_Drive\Shared\bin\temp_ollama"
@@ -465,10 +502,10 @@ if (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe") {
 
 
 # =================================================================
-# IMPORT ALL SELECTED MODELS INTO OLLAMA ENGINE
+# STEP 7: IMPORT ALL SELECTED MODELS INTO OLLAMA ENGINE
 # =================================================================
 Write-Host ""
-Write-Host "Importing AI models into the Ollama engine..." -ForegroundColor Yellow
+Write-Host "[7/7] Importing AI models into the Ollama engine..." -ForegroundColor Yellow
 
 if (-Not (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe")) {
     Write-Host "      ERROR: Ollama not found! Cannot import models." -ForegroundColor Red

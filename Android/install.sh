@@ -18,8 +18,9 @@ USB_ROOT="$(dirname "$SCRIPT_DIR")"
 SHARED_DIR="$USB_ROOT/Shared"
 SHARED_BIN="$SHARED_DIR/bin"
 MODELS_DIR="$SHARED_DIR/models"
+VENDOR_DIR="$SHARED_DIR/vendor"
 
-mkdir -p "$SHARED_BIN" "$MODELS_DIR"
+mkdir -p "$SHARED_BIN" "$MODELS_DIR" "$VENDOR_DIR"
 
 RED='\033[0;31m'
 YLW='\033[1;33m'
@@ -39,7 +40,7 @@ echo -e "${CYN}==========================================================${RST}"
 # ================================================================
 # 1. System & Dependencies
 # ================================================================
-echo -e "${YLW}[1/4] Preparing Termux environment...${RST}"
+echo -e "${YLW}[1/5] Preparing Termux environment...${RST}"
 
 # Grant storage permission
 if [ ! -d "$HOME/storage" ]; then
@@ -61,10 +62,54 @@ TOTAL_RAM_GB=$(awk "BEGIN{printf \"%.1f\", $TOTAL_RAM_KB/1048576}")
 echo -e "${DGR}      Device RAM: ${TOTAL_RAM_GB} GB${RST}"
 
 # ================================================================
-# 2. Compile Llama.cpp natively
+# 2 Download optional UI vendor assets for offline mode
 # ================================================================
 echo ""
-echo -e "${YLW}[2/4] Preparing Llama.cpp Engine...${RST}"
+echo -e "${YLW}[2/5] Downloading UI assets (offline markdown/pdf/fonts)...${RST}"
+VENDOR_NAMES=(
+  "marked.min.js"
+  "highlight.min.js"
+  "highlight-github-dark.min.css"
+  "pdf.min.mjs"
+  "pdf.worker.min.mjs"
+  "Inter-Regular.woff2"
+  "Inter-Medium.woff2"
+  "Inter-SemiBold.woff2"
+  "Inter-Bold.woff2"
+  "JetBrainsMono-Regular.woff2"
+  "JetBrainsMono-Medium.woff2"
+)
+VENDOR_URLS=(
+  "https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"
+  "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"
+  "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/styles/github-dark.min.css"
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs"
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-400-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-500-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-600-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-700-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-400-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-500-normal.woff2"
+)
+for i in "${!VENDOR_NAMES[@]}"; do
+    NAME="${VENDOR_NAMES[$i]}"
+    URL="${VENDOR_URLS[$i]}"
+    DEST="$VENDOR_DIR/$NAME"
+    echo -e "${DGR}      -> ${NAME}${RST}"
+    wget -q "$URL" -O "$DEST"
+    if [ $? -ne 0 ] || [ ! -f "$DEST" ] || [ "$(stat -c%s "$DEST" 2>/dev/null || stat -f%z "$DEST" 2>/dev/null || echo 0)" -lt 1024 ]; then
+        rm -f "$DEST"
+        echo -e "${YLW}         WARNING: Could not fetch ${NAME}. UI will fallback when online.${RST}"
+    fi
+done
+echo -e "${GRN}      UI asset bootstrap complete.${RST}"
+
+# ================================================================
+# 3. Compile Llama.cpp natively
+# ================================================================
+echo ""
+echo -e "${YLW}[3/5] Preparing Llama.cpp Engine...${RST}"
 cd "$SHARED_BIN"
 
 if [ ! -d "llama.cpp" ]; then
@@ -93,10 +138,10 @@ fi
 cp build/bin/llama-server "$SHARED_BIN/llama-server-android" 2>/dev/null || true
 
 # ================================================================
-# 3. Model Retrieval
+# 4. Model Retrieval
 # ================================================================
 echo ""
-echo -e "${YLW}[3/4] AI Model Library...${RST}"
+echo -e "${YLW}[4/5] AI Model Library...${RST}"
 
 echo -e "  ${YLW}[1]${RST} Gemma 2 2B Abliterated   (1.6 GB) ${RED}[UNCENSORED - FASTEST]${RST}"
 echo -e "  ${YLW}[2]${RST} SmolLM2 1.7B Uncensored  (1.0 GB) ${RED}[UNCENSORED - LIGHT]${RST}"
@@ -164,11 +209,11 @@ if [ -n "$MODEL_URL" ]; then
 fi
 
 # ================================================================
-# 4. Final Summary
+# 5. Final Summary
 # ================================================================
 echo ""
 echo -e "${CYN}==========================================================${RST}"
-echo -e "${GRN}   ANDROID SETUP COMPLETE!${RST}"
+echo -e "${GRN}[5/5]   ANDROID SETUP COMPLETE!${RST}"
 echo -e "${CYN}==========================================================${RST}"
 echo ""
 echo -e "  Your engine has been natively compiled for your exact processor."

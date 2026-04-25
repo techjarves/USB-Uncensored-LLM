@@ -153,7 +153,7 @@ fi
 # ================================================================
 # STEP 1: MODEL SELECTION MENU
 # ================================================================
-echo -e "${YLW}[1/6] Choose your AI model(s):${RST}"
+echo -e "${YLW}[1/7] Choose your AI model(s):${RST}"
 echo ""
 
 for NUM in "${MODEL_NUMS[@]}"; do
@@ -322,15 +322,64 @@ echo ""
 # ================================================================
 # STEP 2: Folder structure
 # ================================================================
-echo -e "${YLW}[2/6] Verifying folder structure...${RST}"
+echo -e "${YLW}[2/7] Verifying folder structure...${RST}"
 mkdir -p "$MODELS_DIR" "$SHARED_BIN" "$OLLAMA_DATA"
+VENDOR_DIR="$SHARED_DIR/vendor"
+mkdir -p "$VENDOR_DIR"
 echo -e "${GRN}      Done.${RST}"
 
 # ================================================================
-# STEP 3: Download AI models
+# STEP 3: Download optional UI vendor assets for offline mode
 # ================================================================
 echo ""
-echo -e "${YLW}[3/6] Downloading AI Model(s)...${RST}"
+echo -e "${YLW}[3/7] Downloading UI assets (offline markdown/pdf/fonts)...${RST}"
+
+VENDOR_NAMES=(
+  "marked.min.js"
+  "highlight.min.js"
+  "highlight-github-dark.min.css"
+  "pdf.min.mjs"
+  "pdf.worker.min.mjs"
+  "Inter-Regular.woff2"
+  "Inter-Medium.woff2"
+  "Inter-SemiBold.woff2"
+  "Inter-Bold.woff2"
+  "JetBrainsMono-Regular.woff2"
+  "JetBrainsMono-Medium.woff2"
+)
+
+VENDOR_URLS=(
+  "https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"
+  "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"
+  "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/styles/github-dark.min.css"
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs"
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-400-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-500-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-600-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/inter@5/files/inter-latin-700-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-400-normal.woff2"
+  "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5/files/jetbrains-mono-latin-500-normal.woff2"
+)
+
+for i in "${!VENDOR_NAMES[@]}"; do
+  NAME="${VENDOR_NAMES[$i]}"
+  URL="${VENDOR_URLS[$i]}"
+  DEST="$VENDOR_DIR/$NAME"
+  echo -e "${DGR}      -> ${NAME}${RST}"
+  curl -L --fail "$URL" -o "$DEST" >/dev/null 2>&1
+  if [ $? -ne 0 ] || [ ! -f "$DEST" ] || [ "$(stat -f%z "$DEST" 2>/dev/null || stat -c%s "$DEST" 2>/dev/null || echo 0)" -lt 1024 ]; then
+    rm -f "$DEST"
+    echo -e "${YLW}         WARNING: Could not fetch ${NAME}. UI will fallback when online.${RST}"
+  fi
+done
+echo -e "${GRN}      UI asset bootstrap complete.${RST}"
+
+# ================================================================
+# STEP 4: Download AI models
+# ================================================================
+echo ""
+echo -e "${YLW}[4/7] Downloading AI Model(s)...${RST}"
 
 DOWNLOAD_ERRORS=()
 MODEL_INDEX=0
@@ -408,10 +457,10 @@ if $HAS_CUSTOM && [ -n "$CUSTOM_URL" ]; then
 fi
 
 # ================================================================
-# STEP 4: Create Modelfile configurations
+# STEP 5: Create Modelfile configurations
 # ================================================================
 echo ""
-echo -e "${YLW}[4/6] Creating AI model configurations...${RST}"
+echo -e "${YLW}[5/7] Creating AI model configurations...${RST}"
 
 FIRST_LOCAL=""; FIRST_FILE=""; FIRST_PROMPT=""
 
@@ -449,10 +498,10 @@ printf "$INSTALLED_LIST" > "$MODELS_DIR/installed-models.txt"
 echo -e "${DGR}      Saved model list to installed-models.txt${RST}"
 
 # ================================================================
-# STEP 5: Download Ollama Mac engine
+# STEP 6: Download Ollama Mac engine
 # ================================================================
 echo ""
-echo -e "${YLW}[5/6] Downloading Ollama AI Engine (Mac)...${RST}"
+echo -e "${YLW}[6/7] Downloading Ollama AI Engine (Mac)...${RST}"
 
 OLLAMA_BIN="$SHARED_BIN/ollama-darwin"
 ARCHIVE_URL="https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz"
@@ -487,10 +536,10 @@ else
 fi
 
 # ================================================================
-# STEP 6: Import models into Ollama
+# STEP 7: Import models into Ollama
 # ================================================================
 echo ""
-echo -e "${YLW}[6/6] Importing AI models into the Ollama engine...${RST}"
+echo -e "${YLW}[7/7] Importing AI models into the Ollama engine...${RST}"
 
 if [ ! -x "$OLLAMA_BIN" ]; then
     echo -e "${RED}      ERROR: Ollama not found! Cannot import models.${RST}"
