@@ -27,6 +27,7 @@ import queue
 import uuid
 from datetime import datetime
 from urllib.parse import urlparse
+from socketserver import ThreadingMixIn # Use stdlib threaded HTTP server implementation.
 
 # Optional: psutil for hardware stats (graceful fallback to native APIs if not installed)
 try:
@@ -286,6 +287,15 @@ def _get_hardware_specs():
         pass
     return specs
 
+NOISY_404_PATHS = {
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/site.webmanifest",
+}
+
+def _404_log_level(path):
+    return logging.WARNING if path in NOISY_404_PATHS else logging.ERROR
+
 class LogFormatter(logging.Formatter):
     """Readable, multi-line formatter with strict spacing and rich context."""
 
@@ -496,6 +506,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._proxy_ollama("POST")
 
         else:
+            request_context = self._build_request_context("local_routing")
+            level = _404_log_level(path)
+            _log_event(level, f"Local API Route Not Found (404)", request_context=request_context)
+            
             self.send_response(404)
             self._cors_headers()
             self.end_headers()
@@ -505,6 +519,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/ollama/"):
             self._proxy_ollama("DELETE")
         else:
+            request_context = self._build_request_context("local_routing")
+            level = _404_log_level(path)
+            _log_event(level, f"Local API Route Not Found (404)", request_context=request_context)
+
             self.send_response(404)
             self._cors_headers()
             self.end_headers()
@@ -520,6 +538,9 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
         except FileNotFoundError:
+            request_context = self._build_request_context("static_html")
+            _log_event(logging.ERROR, f"Critical UI File Missing: {HTML_FILE}", request_context=request_context)
+
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"FastChatUI.html not found.")
@@ -551,6 +572,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
         else:
+            request_context = self._build_request_context("static_files")
+            level = _404_log_level(path)
+            _log_event(level, f"Static file asset not found: {safe_path}", request_context=request_context)
+
             self.send_response(404)
             self.end_headers()
 
@@ -679,6 +704,35 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         if body:
             try:
                 payload = json.loads(body)
+
+                # Reject invalid chat requests with no selected model.
+                # Prevents accidental empty-model upstream calls.
+                if ollama_path == "/api/chat":
+                    model_name = payload.get("model", "").strip()
+
+                    if not model_name:
+                        _log_event(
+                            logging.ERROR,
+                            "Rejected chat request with empty model name",
+                            request_context=request_context,
+                        )
+
+                        self.send_response(400)
+                        self._cors_headers()
+                        self.end_headers()
+                        self.wfile.write(
+                            json.dumps({
+                                "error": "No model specified"
+                            }).encode()
+                        )
+
+                        _log_event(
+                            logging.ERROR,
+                            "Rejected chat request with empty model name",
+                            request_context=request_context,
+                        )
+                        return
+
             except Exception:
                 payload = {}
 
@@ -830,20 +884,25 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": str(e)}).encode())
 
 
-class ThreadedHTTPServer(http.server.HTTPServer):
-    """Handle each request in a new thread for concurrent streaming."""
-    def process_request(self, request, client_address):
-        thread = threading.Thread(target=self._handle, args=(request, client_address))
-        thread.daemon = True
-        thread.start()
+# class ThreadedHTTPServer(http.server.HTTPServer):
+#     """Handle each request in a new thread for concurrent streaming."""
+#     def process_request(self, request, client_address):
+#         thread = threading.Thread(target=self._handle, args=(request, client_address))
+#         thread.daemon = True
+#         thread.start()
 
-    def _handle(self, request, client_address):
-        try:
-            self.finish_request(request, client_address)
-        except Exception:
-            self.handle_error(request, client_address)
-        finally:
-            self.shutdown_request(request)
+#     def _handle(self, request, client_address):
+#         try:
+#             self.finish_request(request, client_address)
+#         except Exception:
+#             self.handle_error(request, client_address)
+#         finally:
+#             self.shutdown_request(request)
+
+# Replaced custom thread management with stdlib ThreadingMixIn.
+# More reliable cleanup behavior during streaming disconnects.
+class ThreadedHTTPServer(ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
 
 HOST_HARDWARE_SPECS = _get_hardware_specs()
 LOGGER, LOG_LISTENER = configure_logging()
