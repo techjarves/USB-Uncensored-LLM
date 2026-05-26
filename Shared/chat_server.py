@@ -287,6 +287,15 @@ def _get_hardware_specs():
         pass
     return specs
 
+NOISY_404_PATHS = {
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/site.webmanifest",
+}
+
+def _404_log_level(path):
+    return logging.WARNING if path in NOISY_404_PATHS else logging.ERROR
+
 class LogFormatter(logging.Formatter):
     """Readable, multi-line formatter with strict spacing and rich context."""
 
@@ -497,6 +506,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._proxy_ollama("POST")
 
         else:
+            request_context = self._build_request_context("local_routing")
+            level = _404_log_level(path)
+            _log_event(level, f"Local API Route Not Found (404)", request_context=request_context)
+            
             self.send_response(404)
             self._cors_headers()
             self.end_headers()
@@ -506,6 +519,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/ollama/"):
             self._proxy_ollama("DELETE")
         else:
+            request_context = self._build_request_context("local_routing")
+            level = _404_log_level(path)
+            _log_event(level, f"Local API Route Not Found (404)", request_context=request_context)
+
             self.send_response(404)
             self._cors_headers()
             self.end_headers()
@@ -521,6 +538,9 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
         except FileNotFoundError:
+            request_context = self._build_request_context("static_html")
+            _log_event(logging.ERROR, f"Critical UI File Missing: {HTML_FILE}", request_context=request_context)
+
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"FastChatUI.html not found.")
@@ -552,6 +572,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
         else:
+            request_context = self._build_request_context("static_files")
+            level = _404_log_level(path)
+            _log_event(level, f"Static file asset not found: {safe_path}", request_context=request_context)
+
             self.send_response(404)
             self.end_headers()
 
