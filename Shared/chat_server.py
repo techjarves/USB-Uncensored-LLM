@@ -711,6 +711,12 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                     model_name = payload.get("model", "").strip()
 
                     if not model_name:
+                        _log_event(
+                            logging.ERROR,
+                            "Rejected chat request with empty model name",
+                            request_context=request_context,
+                        )
+
                         self.send_response(400)
                         self._cors_headers()
                         self.end_headers()
