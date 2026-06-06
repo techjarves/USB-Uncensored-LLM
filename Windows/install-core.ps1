@@ -403,19 +403,38 @@ Write-Host "[6/7] Downloading Ollama AI Engine (Windows)..." -ForegroundColor Ye
 $OllamaURL  = "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 $OllamaDest = "$USB_Drive\Shared\bin\ollama-windows-amd64.zip"
 $TempOllamaDir = "$USB_Drive\Shared\bin\temp_ollama"
+$OllamaExe = "$USB_Drive\Shared\bin\ollama-windows.exe"
+$LlamaServerExe = "$USB_Drive\Shared\bin\llama-server.exe"
 
-if (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe") {
+if ((Test-Path $OllamaExe) -and (Test-Path $LlamaServerExe)) {
     Write-Host "      Ollama already installed! Skipping..." -ForegroundColor Green
 } else {
+    if ((Test-Path $OllamaExe) -and (-Not (Test-Path $LlamaServerExe))) {
+        Write-Host "      Existing Ollama install is incomplete. Re-downloading full runtime..." -ForegroundColor Yellow
+    }
     curl.exe -L --ssl-no-revoke --progress-bar $OllamaURL -o $OllamaDest
 
     if (Test-Path $OllamaDest) {
         Write-Host "      Extracting Ollama..." -ForegroundColor Yellow
         try {
+            Remove-Item $TempOllamaDir -Force -Recurse -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path $TempOllamaDir | Out-Null
             Expand-Archive -Path $OllamaDest -DestinationPath $TempOllamaDir -Force
-            # Move the ollama.exe up and rename it to explicitly be ollama-windows.exe
-            Move-Item -Path "$TempOllamaDir\ollama.exe" -Destination "$USB_Drive\Shared\bin\ollama-windows.exe" -Force
+
+            Get-ChildItem -Path $TempOllamaDir -Recurse -File | ForEach-Object {
+                $dest = Join-Path "$USB_Drive\Shared\bin" $_.Name
+                Move-Item -Path $_.FullName -Destination $dest -Force
+                Write-Host "      Extracted: $($_.Name)" -ForegroundColor DarkGray
+            }
+
+            if (Test-Path "$USB_Drive\Shared\bin\ollama.exe") {
+                Move-Item -Path "$USB_Drive\Shared\bin\ollama.exe" -Destination $OllamaExe -Force
+            }
+
+            if (-Not (Test-Path $LlamaServerExe)) {
+                throw "llama-server.exe was not found after extraction"
+            }
+
             # Cleanup
             Remove-Item $TempOllamaDir -Force -Recurse -ErrorAction SilentlyContinue
             Remove-Item $OllamaDest -Force -ErrorAction SilentlyContinue
@@ -463,16 +482,38 @@ if (-Not (Test-Path "$USB_Drive\Shared\bin\ollama-windows.exe")) {
 
     if ($modelsToImport.Count -gt 0) {
         Write-Host "      Starting Ollama temporarily to perform import..." -ForegroundColor DarkGray
-        $ServerProcess = Start-Process -FilePath "$USB_Drive\Shared\bin\ollama-windows.exe" -ArgumentList "serve" -WindowStyle Hidden -PassThru
-        Start-Sleep -Seconds 5
+        $ServerProcess = Start-Process -FilePath $OllamaExe -ArgumentList "serve" -WindowStyle Hidden -PassThru
 
-        foreach ($m in $modelsToImport) {
-            Write-Host "      Importing $($m.Name)..." -ForegroundColor Yellow
+        Write-Host "      Waiting for Ollama to be ready..." -ForegroundColor DarkGray
+        $ready = $false
+        for ($i = 1; $i -le 60; $i++) {
             try {
-                $null = & "$USB_Drive\Shared\bin\ollama-windows.exe" create $m.Local -f "Modelfile-$($m.Local)" 2>&1
-                Write-Host "      $($m.Name) imported successfully!" -ForegroundColor Green
-            } catch {
-                Write-Host "      ERROR: Failed to import $($m.Name)" -ForegroundColor Red
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 2
+                if ($null -ne $response.models) {
+                    $ready = $true
+                    Write-Host "      Ollama is ready (took ${i}s)." -ForegroundColor Green
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+        }
+
+        if (-Not $ready) {
+            Write-Host "      ERROR: Ollama did not become ready in 60 seconds. Skipping import." -ForegroundColor Red
+        }
+
+        if ($ready) {
+            foreach ($m in $modelsToImport) {
+                Write-Host "      Importing $($m.Name)..." -ForegroundColor Yellow
+                Write-Host "      Running: ollama-windows.exe create $($m.Local) -f Modelfile-$($m.Local)" -ForegroundColor DarkGray
+                $createOutput = & $OllamaExe create $m.Local -f "Modelfile-$($m.Local)" 2>&1
+
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "      $($m.Name) imported successfully!" -ForegroundColor Green
+                } else {
+                    Write-Host "      ERROR: Failed to import $($m.Name) (exit $LASTEXITCODE)" -ForegroundColor Red
+                    Write-Host "      $createOutput" -ForegroundColor Red
+                }
             }
         }
 

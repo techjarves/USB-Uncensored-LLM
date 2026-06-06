@@ -1172,12 +1172,41 @@
         color: var(--red);
       }
 
-      /* Typing dots */
-      .typ {
+      .msg-meta {
         display: flex;
         align-items: center;
+        gap: 10px;
+        min-height: 20px;
+        margin-top: 8px;
+        color: var(--t3);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .msg-meta.live {
+        color: var(--t2);
+      }
+      .msg-meta .dot {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.55;
+      }
+
+      /* Typing dots */
+      .think {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--t2);
+        font-size: 14px;
+        line-height: 1;
+        padding: 9px 0;
+      }
+      .typ {
+        display: inline-flex;
+        align-items: center;
         gap: 5px;
-        padding: 8px 0 8px;
       }
       .typ span {
         width: 7px;
@@ -2027,6 +2056,7 @@
       abort: null,
       models: [],
       model: localStorage.getItem('g-model') || '',
+      engineReady: false,
       globalSys: '',
       logMode: localStorage.getItem('logMode') || 'errors_only',
 
@@ -2214,24 +2244,40 @@
           const r = await fetch(OLLAMA + '/api/tags');
           if (!r.ok) throw new Error();
           const d = await r.json();
-          S.models = d.models || [];
+          S.models = Array.isArray(d.models) ? d.models : [];
+          S.engineReady = S.models.length > 0;
           renderModelMenu();
           if (
             S.models.length &&
             (!S.model || !S.models.find((m) => m.name === S.model))
           ) {
             applyModel(S.models[0].name);
-          } else if (S.model) {
+          } else if (S.models.length && S.model) {
             applyModel(S.model);
+          } else if (!S.models.length) {
+            S.model = '';
+            D.modelName.textContent = 'No models installed';
+            D.modelMenu.innerHTML =
+              '<div style="padding:16px;font-size:12px;color:var(--t3);text-align:center;">No models installed</div>';
           }
+          updateSend();
         } catch {
+          S.models = [];
+          S.model = '';
+          S.engineReady = false;
+          D.modelName.textContent = 'Engine Offline';
           D.modelMenu.innerHTML =
             '<div style="padding:16px;font-size:12px;color:var(--red);text-align:center;">Engine Offline</div>';
+          updateSend();
         }
       }
 
       function renderModelMenu() {
-        if (!S.models.length) return;
+        if (!S.models.length) {
+          D.modelMenu.innerHTML =
+            '<div style="padding:16px;font-size:12px;color:var(--t3);text-align:center;">No models installed</div>';
+          return;
+        }
         D.modelMenu.innerHTML = S.models
           .map(
             (m) => `
@@ -2512,6 +2558,12 @@
 
       // ÔöÇÔöÇ Send / Stream to Ollama ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
       async function sendMsg(text) {
+        if (!S.engineReady || !S.model) {
+          toast(S.models.length ? 'Select a model first' : 'No models installed');
+          updateSend();
+          return;
+        }
+
         if ((!text.trim() && !S.attachments.length) || S.streaming) return;
 
         let conv = getConv();
@@ -2531,6 +2583,13 @@
           conv.sys = D.sysTa.value.trim();
           // Defensive: heal conv that somehow has no msgs array
           if (!Array.isArray(conv.msgs)) conv.msgs = [];
+        }
+
+        if (!conv.model) conv.model = S.model;
+        if (!conv.model) {
+          toast('No model selected');
+          updateSend();
+          return;
         }
 
         const baseText = text.trim();
@@ -2603,6 +2662,15 @@
           id: gid(),
           role: 'assistant',
           content: '',
+          pending: true,
+          status: 'Thinking',
+          metrics: {
+            outputTokens: 0,
+            liveTokens: 0,
+            tokensPerSecond: 0,
+            elapsedMs: 0,
+            done: false,
+          },
           ts: Date.now(),
           liked: false,
           disliked: false,
@@ -2611,13 +2679,14 @@
         renderChat();
         scrollEnd();
 
-        const lastRow = D.msgs.lastElementChild;
-        const contentEl = lastRow ? lastRow.querySelector('.mt') : null;
-        if (contentEl)
-          contentEl.innerHTML =
-            '<div class="typ"><span></span><span></span><span></span></div>';
+        const contentEl = getMsgContentEl(aiMsg.id);
+        const statusTimers = [
+          setTimeout(() => updatePendingStatus(aiMsg, 'Warming up model'), 1800),
+          setTimeout(() => updatePendingStatus(aiMsg, 'Still working'), 7000),
+        ];
 
         S.abort = new AbortController();
+        const startedAt = performance.now();
         let apiMsgs = [];
         if (conv.sys) apiMsgs.push({ role: 'system', content: conv.sys });
         conv.msgs.slice(0, -1).forEach((m) => {
@@ -2626,6 +2695,7 @@
           apiMsgs.push(am);
         });
 
+        let liveRenderTimer = null;
         try {
           const res = await fetch(OLLAMA + '/api/chat', {
             method: 'POST',
@@ -2642,11 +2712,45 @@
             }),
             signal: S.abort.signal,
           });
-          if (!res.ok) throw new Error('Ollama error ' + res.status);
+          if (!res.ok) {
+            let errMsg = 'Ollama error ' + res.status;
+            try {
+              const err = await res.json();
+              if (err?.error) errMsg = err.error;
+            } catch {
+              try {
+                const errText = await res.text();
+                if (errText.trim()) errMsg = errText.trim();
+              } catch {}
+            }
+            throw new Error(errMsg);
+          }
 
           const reader = res.body.getReader();
           const dec = new TextDecoder();
           if (contentEl) contentEl.innerHTML = '';
+          let lastLiveRender = 0;
+          const paintLive = (force = false) => {
+            if (!contentEl) return;
+            const now = performance.now();
+            const wait = Math.max(0, 90 - (now - lastLiveRender));
+            if (!force && wait > 0) {
+              if (!liveRenderTimer) {
+                liveRenderTimer = setTimeout(() => {
+                  liveRenderTimer = null;
+                  paintLive(true);
+                }, wait);
+              }
+              return;
+            }
+            if (liveRenderTimer) {
+              clearTimeout(liveRenderTimer);
+              liveRenderTimer = null;
+            }
+            lastLiveRender = now;
+            contentEl.innerHTML = renderStreamingMd(aiMsg.content);
+            scrollEnd();
+          };
 
           while (true) {
             const { done, value } = await reader.read();
@@ -2657,13 +2761,43 @@
               try {
                 const p = JSON.parse(line);
                 if (p.message?.content) {
+                  aiMsg.pending = false;
+                  aiMsg.status = '';
                   aiMsg.content += p.message.content;
-                  if (contentEl) contentEl.textContent = aiMsg.content;
-                  scrollEnd();
+                  aiMsg.metrics.elapsedMs = performance.now() - startedAt;
+                  aiMsg.metrics.liveTokens = estimateTokens(aiMsg.content);
+                  aiMsg.metrics.tokensPerSecond = calcTokensPerSecond(
+                    aiMsg.metrics.liveTokens,
+                    aiMsg.metrics.elapsedMs,
+                  );
+                  updateMsgStats(aiMsg);
+                  paintLive(p.message.content.includes('\n'));
+                }
+                if (p.done) {
+                  aiMsg.metrics.elapsedMs = performance.now() - startedAt;
+                  if (Number.isFinite(p.eval_count)) {
+                    aiMsg.metrics.outputTokens = p.eval_count;
+                    aiMsg.metrics.tokensPerSecond = calcTokensPerSecond(
+                      p.eval_count,
+                      aiMsg.metrics.elapsedMs,
+                    );
+                  }
+                  if (Number.isFinite(p.prompt_eval_count)) {
+                    aiMsg.metrics.promptTokens = p.prompt_eval_count;
+                  }
+                  if (Number.isFinite(p.total_duration)) {
+                    aiMsg.metrics.ollamaMs = p.total_duration / 1000000;
+                  }
+                  aiMsg.metrics.done = true;
+                  updateMsgStats(aiMsg);
                 }
               } catch {}
             }
           }
+          if (liveRenderTimer) clearTimeout(liveRenderTimer);
+          aiMsg.metrics.elapsedMs = performance.now() - startedAt;
+          aiMsg.metrics.done = true;
+          updateMsgStats(aiMsg);
           if (contentEl) {
             contentEl.innerHTML = renderMd(aiMsg.content);
             contentEl.querySelectorAll('pre code').forEach((b) => {
@@ -2671,7 +2805,18 @@
             });
           }
         } catch (err) {
+          aiMsg.pending = false;
+          aiMsg.status = '';
           if (err.name === 'AbortError') {
+            aiMsg.metrics.elapsedMs = performance.now() - startedAt;
+            aiMsg.metrics.outputTokens = estimateTokens(aiMsg.content);
+            aiMsg.metrics.tokensPerSecond = calcTokensPerSecond(
+              aiMsg.metrics.outputTokens,
+              aiMsg.metrics.elapsedMs,
+            );
+            aiMsg.metrics.stopped = true;
+            aiMsg.metrics.done = true;
+            updateMsgStats(aiMsg);
             if (aiMsg.content) {
               if (contentEl) contentEl.innerHTML = renderMd(aiMsg.content);
             } else if (contentEl)
@@ -2683,6 +2828,10 @@
             conv.msgs.pop();
           }
         } finally {
+          if (liveRenderTimer) clearTimeout(liveRenderTimer);
+          statusTimers.forEach(clearTimeout);
+          aiMsg.pending = false;
+          aiMsg.status = '';
           S.streaming = false;
           updateSend();
           save();
@@ -2693,6 +2842,13 @@
 
       function stopStream() {
         if (S.abort) S.abort.abort();
+      }
+
+      function updatePendingStatus(msg, status) {
+        if (!S.streaming || !msg.pending || msg.content) return;
+        msg.status = status;
+        const el = getMsgContentEl(msg.id);
+        if (el) el.innerHTML = renderThinking(status);
       }
 
       // ÔöÇÔöÇ Markdown ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -2719,6 +2875,14 @@
         if (typeof marked === 'undefined')
           return esc(text).replace(/\n/g, '<br>');
         return marked.parse(text, { breaks: true });
+      }
+
+      function renderStreamingMd(text) {
+        if (!text) return '';
+        let safeText = text;
+        const fenceCount = (safeText.match(/(^|\n)```/g) || []).length;
+        if (fenceCount % 2 === 1) safeText += '\n```';
+        return renderMd(safeText);
       }
 
       // ÔöÇÔöÇ Rendering ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -2790,8 +2954,12 @@
       }
 
       function renderAI(msg, isLast) {
-        const parsed =
-          S.streaming && isLast ? esc(msg.content) : renderMd(msg.content);
+        const isWaiting = S.streaming && isLast && !msg.content;
+        const parsed = isWaiting
+          ? renderThinking(msg.status || 'Thinking')
+          : S.streaming && isLast
+            ? renderStreamingMd(msg.content)
+            : renderMd(msg.content);
         const actions =
           !S.streaming || !isLast
             ? `
@@ -2802,10 +2970,70 @@
         </div>`
             : '';
 
-        return `<div class="mr">
+        return `<div class="mr" data-msg-id="${msg.id}">
         <div class="ma ai"><svg viewBox="0 0 24 24"><path d="M12 2L14.09 8.26L21 9.27L16 14.14L17.18 21.02L12 17.77L6.82 21.02L8 14.14L3 9.27L9.91 8.26L12 2Z" fill="white"/></svg></div>
-        <div class="mc"><div class="mt">${parsed || ''}</div>${actions}</div>
+        <div class="mc"><div class="mt">${parsed || ''}</div>${renderMsgStats(msg)}${actions}</div>
     </div>`;
+      }
+
+      function getMsgContentEl(id) {
+        return D.msgs.querySelector(`[data-msg-id="${id}"] .mt`);
+      }
+
+      function getMsgStatsEl(id) {
+        return D.msgs.querySelector(`[data-msg-id="${id}"] .msg-meta`);
+      }
+
+      function updateMsgStats(msg) {
+        const el = getMsgStatsEl(msg.id);
+        if (el) el.outerHTML = renderMsgStats(msg);
+      }
+
+      function renderThinking(label) {
+        return `<div class="think"><span>${esc(label)}</span><div class="typ"><span></span><span></span><span></span></div></div>`;
+      }
+
+      function renderMsgStats(msg) {
+        const m = msg.metrics;
+        if (!m) return '';
+        const parts = [];
+        if (!m.done) {
+          parts.push(`${formatRate(m.tokensPerSecond)} tok/s`);
+        } else {
+          parts.push(`${Number(m.outputTokens || 0).toLocaleString()} tokens`);
+        }
+        if (m.done && Number.isFinite(m.elapsedMs)) {
+          parts.push(formatDuration(m.elapsedMs));
+        }
+        if (m.stopped) parts.push('stopped');
+        const live = !m.done ? ' live' : '';
+        return `<div class="msg-meta${live}">${parts.map(esc).join('<span class="dot"></span>')}</div>`;
+      }
+
+      function estimateTokens(text) {
+        if (!text) return 0;
+        const chunks = text.match(/[\p{L}\p{N}_]+|[^\s]/gu) || [];
+        return chunks.length;
+      }
+
+      function calcTokensPerSecond(tokens, elapsedMs) {
+        if (!Number.isFinite(tokens) || !Number.isFinite(elapsedMs) || elapsedMs <= 0)
+          return 0;
+        return tokens / (elapsedMs / 1000);
+      }
+
+      function formatRate(rate) {
+        if (!Number.isFinite(rate) || rate <= 0) return '0.0';
+        return rate < 10 ? rate.toFixed(1) : rate.toFixed(0);
+      }
+
+      function formatDuration(ms) {
+        if (!Number.isFinite(ms)) return '';
+        if (ms < 1000) return `${Math.max(1, Math.round(ms))} ms`;
+        if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+        const minutes = Math.floor(ms / 60000);
+        const seconds = Math.round((ms % 60000) / 1000);
+        return `${minutes}m ${seconds}s`;
       }
 
       // ÔöÇÔöÇ Actions ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -2857,15 +3085,16 @@
 
       function updateSend() {
         const has = D.inp.value.trim().length > 0 || S.attachments.length > 0;
+        const canSend = has && S.engineReady && !!S.model;
         D.iw.classList.toggle('ht', has);
         if (S.streaming) {
           D.send.className = 'ib2 stbtn';
           D.send.innerHTML = '<i class="fa-solid fa-stop"></i>';
           D.send.disabled = false;
         } else {
-          D.send.className = 'ib2 sbtn' + (has ? ' on' : '');
+          D.send.className = 'ib2 sbtn' + (canSend ? ' on' : '');
           D.send.innerHTML = '<i class="fa-solid fa-arrow-up"></i>';
-          D.send.disabled = !has;
+          D.send.disabled = !canSend;
         }
       }
       function autoResize() {

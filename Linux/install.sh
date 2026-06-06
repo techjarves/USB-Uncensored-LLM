@@ -452,36 +452,51 @@ echo ""
 echo -e "${YLW}[6/7] Downloading Ollama AI Engine (Linux)...${RST}"
 
 OLLAMA_BIN="$SHARED_BIN/ollama-linux"
+OLLAMA_LIB_DIR="$SHARED_DIR/lib/ollama"
+
+ollama_runtime_ok() {
+    [ -f "$OLLAMA_BIN" ] &&
+    is_elf "$OLLAMA_BIN" &&
+    file_ok "$OLLAMA_BIN" 10000000 &&
+    [ -f "$OLLAMA_LIB_DIR/llama-server" ]
+}
 
 # Validate: must exist, be a real ELF binary, and > 10 MB
-if [ -f "$OLLAMA_BIN" ] && is_elf "$OLLAMA_BIN" && file_ok "$OLLAMA_BIN" 10000000; then
+if ollama_runtime_ok; then
     echo -e "${GRN}      Ollama already installed! Skipping...${RST}"
 else
-    # Remove any stale/corrupted file
+    if [ -f "$OLLAMA_BIN" ] && [ ! -f "$OLLAMA_LIB_DIR/llama-server" ]; then
+        echo -e "${YLW}      Existing Ollama install is incomplete. Re-downloading full runtime...${RST}"
+    fi
+
+    # Remove any stale/corrupted files
     rm -f "$OLLAMA_BIN"
+    rm -rf "$OLLAMA_LIB_DIR"
 
     ARCHIVE_URL="https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst"
 
-    echo -e "      Downloading Ollama engine (streaming - stops after binary extracted)..."
-    # Stream curl → tar: since bin/ollama is the FIRST entry in the archive,
-    # tar exits after extracting it and the pipe breaks — we never download
-    # the hundreds of MB of CUDA libs that follow.
+    echo -e "      Downloading full Ollama runtime..."
+    # Preserve archive layout under Shared:
+    #   Shared/bin/ollama -> Shared/bin/ollama-linux
+    #   Shared/lib/ollama/* runtime files, including llama-server
     curl -L --fail "$ARCHIVE_URL" |  \
-        tar --use-compress-program=zstd -xf - -C "$SHARED_BIN" \
-            --strip-components=1 bin/ollama 2>/dev/null
-    PIPE_RC=${PIPESTATUS[1]}   # tar exit code (0 = extracted successfully)
+        tar --use-compress-program=zstd -xf - -C "$SHARED_DIR" 2>/dev/null
+    PIPE_RC=("${PIPESTATUS[@]}")
+    CURL_RC=${PIPE_RC[0]}
+    TAR_RC=${PIPE_RC[1]}
 
     # Rename extracted 'ollama' -> 'ollama-linux'
     if [ -f "$SHARED_BIN/ollama" ]; then
         mv "$SHARED_BIN/ollama" "$OLLAMA_BIN"
     fi
 
-    if [ "$PIPE_RC" -ne 0 ] || ! is_elf "$OLLAMA_BIN"; then
-        echo -e "${RED}      ERROR: Extraction failed or binary is invalid!${RST}"
+    if [ "$CURL_RC" -ne 0 ] || [ "$TAR_RC" -ne 0 ] || ! ollama_runtime_ok; then
+        echo -e "${RED}      ERROR: Extraction failed, binary is invalid, or llama-server is missing!${RST}"
         rm -f "$OLLAMA_BIN"
         DOWNLOAD_ERRORS+=("Ollama Engine")
     else
         chmod +x "$OLLAMA_BIN"
+        find "$OLLAMA_LIB_DIR" -type f -exec chmod +x {} \; 2>/dev/null
         echo -e "${GRN}      Ollama Linux Engine ready!${RST}"
     fi
 fi
@@ -497,10 +512,9 @@ if [ ! -x "$OLLAMA_BIN" ]; then
     echo -e "${RED}      Please re-run the installer to download Ollama.${RST}"
 else
     OLLAMA_RUNTIME="$OLLAMA_DATA/../.ollama-runtime"
-    mkdir -p "$OLLAMA_RUNTIME/runners" "$OLLAMA_RUNTIME/tmp"
+    mkdir -p "$OLLAMA_RUNTIME/tmp"
     export OLLAMA_MODELS="$OLLAMA_DATA"
     export OLLAMA_HOME="$OLLAMA_RUNTIME"
-    export OLLAMA_RUNNERS_DIR="$OLLAMA_RUNTIME/runners"
     export OLLAMA_TMPDIR="$OLLAMA_RUNTIME/tmp"
     export OLLAMA_ORIGINS="*"
     export OLLAMA_HOST="127.0.0.1:11434"
@@ -515,10 +529,20 @@ else
     OLLAMA_PID=$!
 
     # Wait for it to be ready
-    for i in $(seq 1 30); do
-        curl -s http://127.0.0.1:11434/api/tags > /dev/null 2>&1 && break
+    OLLAMA_READY=false
+    for i in $(seq 1 60); do
+        if curl -s http://127.0.0.1:11434/api/tags | grep -q '"models"'; then
+            OLLAMA_READY=true
+            echo -e "${GRN}      Ollama is ready (took ${i}s).${RST}"
+            break
+        fi
         sleep 1
     done
+
+    if [ "$OLLAMA_READY" != true ]; then
+        echo -e "${RED}      ERROR: Ollama did not become ready in 60 seconds. Skipping import.${RST}"
+        DOWNLOAD_ERRORS+=("Ollama Import")
+    fi
 
     cd "$MODELS_DIR" || exit 1
 
@@ -530,24 +554,30 @@ else
             return
         fi
         echo -e "${YLW}      Importing ${NAME}...${RST}"
-        "$OLLAMA_BIN" create "$LOCAL" -f "Modelfile-${LOCAL}" 2>&1
-        if [ $? -eq 0 ]; then
+        echo -e "${DGR}      Running: ollama-linux create ${LOCAL} -f Modelfile-${LOCAL}${RST}"
+        CREATE_OUTPUT=$("$OLLAMA_BIN" create "$LOCAL" -f "Modelfile-${LOCAL}" 2>&1)
+        CREATE_RC=$?
+        if [ "$CREATE_RC" -eq 0 ]; then
             echo -e "${GRN}      ${NAME} imported successfully!${RST}"
         else
-            echo -e "${RED}      ERROR: Failed to import ${NAME}${RST}"
+            echo -e "${RED}      ERROR: Failed to import ${NAME} (exit ${CREATE_RC})${RST}"
+            echo -e "${RED}${CREATE_OUTPUT}${RST}"
+            DOWNLOAD_ERRORS+=("Import: ${NAME}")
         fi
     }
 
-    for NUM in "${SELECTED_NUMS[@]}"; do
-        LOCAL=$(get_field "$NUM" LOCAL)
-        NAME=$(get_field "$NUM" NAME)
-        FILE=$(get_field "$NUM" FILE)
-        MINB=$(get_field "$NUM" MINB)
-        import_model "$LOCAL" "$NAME" "$FILE" "$MINB"
-    done
+    if [ "$OLLAMA_READY" = true ]; then
+        for NUM in "${SELECTED_NUMS[@]}"; do
+            LOCAL=$(get_field "$NUM" LOCAL)
+            NAME=$(get_field "$NUM" NAME)
+            FILE=$(get_field "$NUM" FILE)
+            MINB=$(get_field "$NUM" MINB)
+            import_model "$LOCAL" "$NAME" "$FILE" "$MINB"
+        done
 
-    if $HAS_CUSTOM && [ -n "$CUSTOM_URL" ]; then
-        import_model "$CUSTOM_LOCAL" "Custom: $CUSTOM_FILE" "$CUSTOM_FILE" 100000000
+        if $HAS_CUSTOM && [ -n "$CUSTOM_URL" ]; then
+            import_model "$CUSTOM_LOCAL" "Custom: $CUSTOM_FILE" "$CUSTOM_FILE" 100000000
+        fi
     fi
 
     echo -e "${DGR}      Stopping temporary Ollama server...${RST}"

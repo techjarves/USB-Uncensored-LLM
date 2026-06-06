@@ -688,6 +688,36 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             request_context["model_temperature"] = payload.get("options", {}).get("temperature", "-")
 
         try:
+            if method == "POST" and ollama_path == "/api/chat":
+                model = payload.get("model") if isinstance(payload, dict) else None
+                messages = payload.get("messages") if isinstance(payload, dict) else None
+
+                if not isinstance(model, str) or not model.strip():
+                    _log_event(
+                        logging.ERROR,
+                        "Rejected chat request with missing or empty model",
+                        request_context=request_context,
+                    )
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors_headers()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Missing or empty model field"}).encode())
+                    return
+
+                if not isinstance(messages, list) or not messages:
+                    _log_event(
+                        logging.ERROR,
+                        "Rejected chat request with missing or empty messages",
+                        request_context=request_context,
+                    )
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors_headers()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Missing or empty messages field"}).encode())
+                    return
+
             # Handle fake /api/tags for llama.cpp mode
             if LLAMA_CPP_MODE and ollama_path == "/api/tags":
                 self.send_response(200)
