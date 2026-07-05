@@ -22,7 +22,8 @@ export OLLAMA_MODELS="$SHARED_DIR/models/ollama_data"
 export OLLAMA_HOME="$OLLAMA_RUNTIME"
 export OLLAMA_TMPDIR="$OLLAMA_RUNTIME/tmp"
 export OLLAMA_ORIGINS="*"
-export OLLAMA_HOST="127.0.0.1:11434"
+#export OLLAMA_HOST="127.0.0.1:11434"
+export OLLAMA_HOST="0.0.0.0:11434" # Darpan 
 mkdir -p "$OLLAMA_RUNTIME/tmp"
 # -------------------------------------------------------
 
