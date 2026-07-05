@@ -29,6 +29,13 @@ foreach ($asset in $json.assets) {
         if (-Not (Test-Path $dest) -or (Get-Item $dest).Length -lt 1024) {
             throw "Downloaded file missing/too small"
         }
+        # Verify SHA256 if hash field is present in config
+        if ($asset.sha256) {
+            $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+            if ($actualHash -ne $asset.sha256.ToLower()) {
+                throw "SHA256 mismatch: expected $($asset.sha256), got $actualHash"
+            }
+        }
         # Patch Font Awesome CSS so font paths resolve from ./vendor/ instead of ../webfonts/
         if ($name -eq "fa-all.min.css") {
             (Get-Content -Raw $dest) -replace '\.\.\/webfonts\/', './' | Set-Content -NoNewline $dest

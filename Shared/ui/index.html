@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:11434 http://localhost:11434" />
+  <title>USB-LLM</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="../vendor/highlight-github-dark.min.css" />
+  <link rel="stylesheet" href="../vendor/fa-all.min.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="">
+      <div class="sb-hd">
+        <div class="sb-brand">
+          <div class="sb-brand-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4c0 2 2 4 2 4h4s2-2 2-4a4 4 0 0 0-4-4z"/><path d="M6 15h12l-1.5 5h-9z"/></svg>
+          </div>
+          <span class="sb-brand-name">USB-LLM</span>
+        </div>
+        <button class="nc-btn" onclick="newConvo()"><i class="fa-solid fa-plus"></i> New chat</button>
+      </div>
+      <div class="sb-section-label">Conversations</div>
+      <div class="sb-list" id="sb-list"></div>
+      <div class="sb-ft">
+        <button class="sf-btn" onclick="toggleTheme()" title="Toggle theme"><i class="fa-regular fa-moon"></i></button>
+        <div class="sf-sp"></div>
+        <button class="sf-btn" data-toggle-sidebar title="Close sidebar"><i class="fa-solid fa-chevron-left"></i></button>
+      </div>
+    </aside>
+    <div id="overlay"></div>
+
+    <!-- Main -->
+    <div id="main">
+      <div id="topbar">
+        <button class="tb-btn" data-toggle-sidebar title="Toggle sidebar"><i class="fa-solid fa-bars"></i></button>
+        <span class="tb-title">USB-LLM</span>
+        <button id="sys-prompt-btn" onclick="toggleSysPanel()">
+          <i class="fa-solid fa-pen-line"></i> System
+        </button>
+        <div class="tb-sp"></div>
+        <div class="hw-bar">
+          <div class="hw-stat"><i class="fa-solid fa-microchip"></i><span id="hw-cpu" class="hw-pct">--</span><div class="hw-mini-track"><div class="hw-mini-bar cpu" id="hw-cpu-bar"></div></div></div>
+          <div class="hw-stat"><i class="fa-solid fa-memory"></i><span id="hw-ram" class="hw-pct">--</span><div class="hw-mini-track"><div class="hw-mini-bar ram" id="hw-ram-bar"></div></div></div>
+        </div>
+      </div>
+
+      <!-- System Prompt Panel -->
+      <div id="sys-panel">
+        <div class="sys-row">
+          <label for="sys-ta">System Prompt</label>
+          <textarea id="sys-ta" placeholder="Enter a system prompt to set AI behavior across all conversations…"></textarea>
+        </div>
+        <div class="sys-actions">
+          <button class="sys-btn primary" onclick="applySysPrompt()">Apply</button>
+          <button class="sys-btn secondary" onclick="clearSysPrompt()">Clear</button>
+          <div class="sf-sp"></div>
+          <button class="sys-btn secondary" onclick="toggleSysPanel()">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Chat -->
+      <div id="chat">
+        <div id="welcome">
+          <div class="wl-wrap">
+            <div class="wl-ring"></div>
+            <div class="wl-inner">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4c0 2 2 4 2 4h4s2-2 2-4a4 4 0 0 0-4-4z"/><path d="M6 15h12l-1.5 5h-9z"/></svg>
+            </div>
+          </div>
+          <h1 class="wt">USB-LLM</h1>
+          <p class="ws">Private AI on your hardware</p>
+          <div class="sg">
+            <div class="sc" onclick="document.getElementById('msg-inp').value='Explain how large language models work';updateSendBtn();">
+              <div class="si ib"><i class="fa-solid fa-brain"></i></div>
+              <div class="st">Explain LLM basics</div>
+            </div>
+            <div class="sc" onclick="document.getElementById('msg-inp').value='Write a Python script to analyze CSV data';updateSendBtn();">
+              <div class="si ip"><i class="fa-solid fa-code"></i></div>
+              <div class="st">Write Python code</div>
+            </div>
+            <div class="sc" onclick="document.getElementById('msg-inp').value='Summarize the key benefits of running AI locally';updateSendBtn();">
+              <div class="si it"><i class="fa-solid fa-shield-halved"></i></div>
+              <div class="st">Local AI benefits</div>
+            </div>
+            <div class="sc" onclick="document.getElementById('msg-inp').value='Create a weekly meal plan for a vegetarian';updateSendBtn();">
+              <div class="si io"><i class="fa-solid fa-utensils"></i></div>
+              <div class="st">Meal plan</div>
+            </div>
+          </div>
+        </div>
+        <div id="msgs"></div>
+      </div>
+
+      <!-- Input -->
+      <div id="inp-area">
+        <div id="vision-warn"><i class="fa-solid fa-triangle-exclamation"></i> This model may not support image input</div>
+        <div class="fbar" id="file-bar">
+          <div class="img-preview hidden" id="img-preview-wrap">
+            <img id="img-preview" alt="" />
+            <button class="f-rm" onclick="removeAttachment()">&times;</button>
+          </div>
+          <div class="pdf-preview hidden" id="pdf-preview-wrap">
+            <i class="fa-regular fa-file-pdf"></i>
+            <div class="p-info"><strong id="pdf-name"></strong><span>PDF attached</span></div>
+            <button class="f-rm" onclick="removeAttachment()">&times;</button>
+          </div>
+        </div>
+        <div class="iw">
+          <div class="model-row">
+            <div class="model-dd">
+              <button class="model-btn" onclick="toggleModelMenu()">
+<i class="fa-solid fa-microchip"></i>
+                <span id="model-name">llama3.2:3b</span>
+                <span class="chev"><i class="fa-solid fa-chevron-up"></i></span>
+              </button>
+              <div class="model-menu" id="model-menu"></div>
+            </div>
+            <div class="temp-ctrl">
+              <span class="temp-lbl">Temp</span>
+              <input type="number" id="temp-input" min="0" max="2" step="0.1" />
+            </div>
+          </div>
+          <div class="text-row">
+            <textarea id="msg-inp" rows="1" placeholder="Message USB-LLM…" autofocus></textarea>
+            <div class="ia">
+              <button class="ib2" id="file-btn" title="Attach file"><i class="fa-solid fa-paperclip"></i></button>
+              <input type="file" id="file-input" accept="image/*,.pdf,text/*" class="hidden" />
+              <button class="ib2 sbtn hidden"><i class="fa-solid fa-arrow-up"></i></button>
+              <button class="ib2 stbtn hidden"><i class="fa-solid fa-stop"></i></button>
+            </div>
+          </div>
+        </div>
+        <div class="disc">LLM responses are generated locally. Verify important information independently.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+  <!-- Scripts: loaded in dependency order -->
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/dompurify.min.js"></script>
+  <script src="../vendor/highlight.min.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/markdown.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

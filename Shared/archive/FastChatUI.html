@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="./vendor/highlight-github-dark.min.css" />
     <script src="./vendor/marked.min.js"></script>
     <script src="./vendor/highlight.min.js"></script>
+    <script src="./vendor/dompurify.min.js"></script>
     <style>
       /* ── Local fonts (installed by platform installer) ─────── */
       @font-face {
@@ -2874,7 +2875,11 @@
       function renderMd(text) {
         if (typeof marked === 'undefined')
           return esc(text).replace(/\n/g, '<br>');
-        return marked.parse(text, { breaks: true });
+        let html = marked.parse(text, { breaks: true });
+        if (typeof DOMPurify !== 'undefined') {
+          html = DOMPurify.sanitize(html);
+        }
+        return html;
       }
 
       function renderStreamingMd(text) {

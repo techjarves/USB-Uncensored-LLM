@@ -213,7 +213,7 @@ if $HAS_CUSTOM; then
     if $HAS_CUSTOM && [ -n "$CUSTOM_URL" ]; then
         # Extract filename
         CUSTOM_FILE=$(basename "${CUSTOM_URL%%\?*}")
-        [[ "$CUSTOM_FILE" != *.gguf ]] && CUSTOM_FILE="${CUSTOM_FILE}.gguf"
+        [[ "${CUSTOM_FILE,,}" != *.gguf ]] && CUSTOM_FILE="${CUSTOM_FILE}.gguf"
 
         read -r -p "  Give it a short name (e.g. mymodel-local): " CUSTOM_LOCAL_RAW
         CUSTOM_LOCAL=$(echo "${CUSTOM_LOCAL_RAW:-custom}" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]/-/g')
@@ -364,6 +364,16 @@ download_model() {
     done
 
     if $SUCCESS; then
+        MODEL_SHA256=$(get_field "$NUM" SHA256)
+        if [ -n "$MODEL_SHA256" ]; then
+            ACTUAL_SHA=$(sha256sum "$DEST" | cut -d' ' -f1)
+            if [ "$ACTUAL_SHA" != "$MODEL_SHA256" ]; then
+                echo -e "${RED}      WARNING: SHA256 mismatch! Expected $MODEL_SHA256${RST}"
+                echo -e "${YLW}      File may be corrupted. Re-download recommended.${RST}"
+            else
+                echo -e "${GRN}      SHA256 verified.${RST}"
+            fi
+        fi
         echo -e "${GRN}      Download complete!${RST}"
     else
         DOWNLOAD_ERRORS+=("$NAME")
@@ -476,14 +486,30 @@ else
     ARCHIVE_URL="https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst"
 
     echo -e "      Downloading full Ollama runtime..."
-    # Preserve archive layout under Shared:
-    #   Shared/bin/ollama -> Shared/bin/ollama-linux
-    #   Shared/lib/ollama/* runtime files, including llama-server
-    curl -L --fail "$ARCHIVE_URL" |  \
-        tar --use-compress-program=zstd -xf - -C "$SHARED_DIR" 2>/dev/null
-    PIPE_RC=("${PIPESTATUS[@]}")
-    CURL_RC=${PIPE_RC[0]}
-    TAR_RC=${PIPE_RC[1]}
+    OLLAMA_ARCHIVE="$SHARED_BIN/ollama-linux.tar.zst"
+    curl -L --fail "$ARCHIVE_URL" -o "$OLLAMA_ARCHIVE"
+    CURL_RC=$?
+
+    # Verify SHA256 if available
+    if [ "$CURL_RC" -eq 0 ]; then
+        OLLAMA_SHA256=""
+        if [ -n "$OLLAMA_SHA256" ]; then
+            ACTUAL_SHA=$(sha256sum "$OLLAMA_ARCHIVE" | cut -d' ' -f1)
+            if [ "$ACTUAL_SHA" != "$OLLAMA_SHA256" ]; then
+                echo -e "${RED}      ERROR: SHA256 mismatch for Ollama download!${RST}"
+                echo -e "${DGR}      Expected: $OLLAMA_SHA256${RST}"
+                echo -e "${DGR}      Got:      $ACTUAL_SHA${RST}"
+                rm -f "$OLLAMA_ARCHIVE"
+                DOWNLOAD_ERRORS+=("Ollama Engine (checksum)")
+                CURL_RC=1
+            fi
+        fi
+        tar --use-compress-program=zstd -xf "$OLLAMA_ARCHIVE" -C "$SHARED_DIR" 2>/dev/null
+        TAR_RC=$?
+        rm -f "$OLLAMA_ARCHIVE"
+    else
+        TAR_RC=1
+    fi
 
     # Rename extracted 'ollama' -> 'ollama-linux'
     if [ -f "$SHARED_BIN/ollama" ]; then

@@ -13,8 +13,13 @@ Shared/chat_data/
 # Ignore downloaded binaries and runtimes
 Shared/python/
 Shared/bin/
+Shared/lib/
 Shared/*.zip
 Shared/logs/
+
+# Ignore Python cache
+__pycache__/
+*.pyc
 
 # Ignore Windows system files
 Thumbs.db

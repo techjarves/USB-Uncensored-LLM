@@ -23,11 +23,12 @@ def shell_quote(value) -> str:
 def emit_models_shell(models):
     nums = [str(m.get("num", "")) for m in models if m.get("num") is not None]
     print(f"MODEL_NUMS=({' '.join(nums)})")
-    fields = ("NAME", "FILE", "URL", "SIZE", "MINB", "LOCAL", "LABEL", "BADGE", "PROMPT")
+    fields = ("NAME", "FILE", "URL", "SHA256", "SIZE", "MINB", "LOCAL", "LABEL", "BADGE", "PROMPT")
     key_map = {
         "NAME": "name",
         "FILE": "file",
         "URL": "url",
+        "SHA256": "sha256",
         "SIZE": "size",
         "MINB": "min_bytes",
         "LOCAL": "local",
@@ -49,8 +50,9 @@ def emit_vendors_lines(assets):
     for a in assets:
         name = a.get("name", "")
         url = a.get("url", "")
+        sha = a.get("sha256", "")
         if name and url:
-            print(f"{name}|{url}")
+            print(f"{name}|{url}|{sha}")
 
 
 def main():

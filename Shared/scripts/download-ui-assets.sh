@@ -36,7 +36,7 @@ download_file() {
 }
 
 echo "      Downloading shared UI vendor asset list..."
-while IFS='|' read -r name url; do
+while IFS='|' read -r name url sha; do
   [ -z "${name:-}" ] && continue
   [ -z "${url:-}" ] && continue
   dest="$VENDOR_DIR/$name"
@@ -47,6 +47,21 @@ while IFS='|' read -r name url; do
     rm -f "$dest"
     echo "         WARNING: Could not fetch $name. UI will fallback when online."
     continue
+  fi
+  # Verify SHA256 if hash is provided
+  if [ -n "${sha:-}" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual_sha=$(sha256sum "$dest" | cut -d' ' -f1)
+    elif command -v shasum >/dev/null 2>&1; then
+      actual_sha=$(shasum -a 256 "$dest" | cut -d' ' -f1)
+    else
+      actual_sha=""
+    fi
+    if [ -n "$actual_sha" ] && [ "$actual_sha" != "$sha" ]; then
+      rm -f "$dest"
+      echo "         WARNING: SHA256 mismatch for $name. Skipping."
+      continue
+    fi
   fi
   bytes="$(wc -c < "$dest" 2>/dev/null || echo 0)"
   if [ "${bytes:-0}" -lt 1024 ]; then
