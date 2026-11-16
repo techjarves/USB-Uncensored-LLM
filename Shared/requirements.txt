@@ -1,0 +1,4 @@
+# USB-Uncensored-LLM Python dependencies
+# The chat server uses only Python stdlib — no external packages required.
+# psutil is optional; hardware stats fall back to ctypes/stdlib without it.
+psutil>=5.9.0,<7.0.0

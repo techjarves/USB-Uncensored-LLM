@@ -212,7 +212,7 @@ if $HAS_CUSTOM; then
 
     if $HAS_CUSTOM && [ -n "$CUSTOM_URL" ]; then
         CUSTOM_FILE=$(basename "${CUSTOM_URL%%\?*}")
-        [[ "$CUSTOM_FILE" != *.gguf ]] && CUSTOM_FILE="${CUSTOM_FILE}.gguf"
+        [[ "${CUSTOM_FILE,,}" != *.gguf ]] && CUSTOM_FILE="${CUSTOM_FILE}.gguf"
         read -r -p "  Give it a short name (e.g. mymodel-local): " CUSTOM_LOCAL_RAW
         CUSTOM_LOCAL=$(echo "${CUSTOM_LOCAL_RAW:-custom}" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]/-/g')
         [[ "$CUSTOM_LOCAL" != *-local ]] && CUSTOM_LOCAL="${CUSTOM_LOCAL}-local"
@@ -347,6 +347,20 @@ download_model() {
     done
 
     if $SUCCESS; then
+        MODEL_SHA256=$(get_field "$NUM" SHA256)
+        if [ -n "$MODEL_SHA256" ]; then
+            if command -v shasum >/dev/null 2>&1; then
+                ACTUAL_SHA=$(shasum -a 256 "$DEST" | cut -d' ' -f1)
+            else
+                ACTUAL_SHA=$(sha256sum "$DEST" | cut -d' ' -f1)
+            fi
+            if [ "$ACTUAL_SHA" != "$MODEL_SHA256" ]; then
+                echo -e "${RED}      WARNING: SHA256 mismatch! Expected $MODEL_SHA256${RST}"
+                echo -e "${YLW}      File may be corrupted. Re-download recommended.${RST}"
+            else
+                echo -e "${GRN}      SHA256 verified.${RST}"
+            fi
+        fi
         echo -e "${GRN}      Download complete!${RST}"
     else
         DOWNLOAD_ERRORS+=("$NAME")
@@ -450,6 +464,23 @@ else
     echo -e "      Downloading full Ollama engine runtime..."
     curl -L --fail "$ARCHIVE_URL" -o "$OLLAMA_TMP_DIR/ollama-darwin.tgz"
     CURL_RC=$?
+    if [ "$CURL_RC" -eq 0 ]; then
+        OLLAMA_SHA256=""
+        if [ -n "$OLLAMA_SHA256" ]; then
+            if command -v shasum >/dev/null 2>&1; then
+                ACTUAL_SHA=$(shasum -a 256 "$OLLAMA_TMP_DIR/ollama-darwin.tgz" | cut -d' ' -f1)
+            else
+                ACTUAL_SHA=$(sha256sum "$OLLAMA_TMP_DIR/ollama-darwin.tgz" | cut -d' ' -f1)
+            fi
+            if [ "$ACTUAL_SHA" != "$OLLAMA_SHA256" ]; then
+                echo -e "${RED}      ERROR: SHA256 mismatch for Ollama download!${RST}"
+                echo -e "${DGR}      Expected: $OLLAMA_SHA256${RST}"
+                echo -e "${DGR}      Got:      $ACTUAL_SHA${RST}"
+                rm -f "$OLLAMA_TMP_DIR/ollama-darwin.tgz"
+                CURL_RC=1
+            fi
+        fi
+    fi
     if [ "$CURL_RC" -eq 0 ]; then
         tar -xzf "$OLLAMA_TMP_DIR/ollama-darwin.tgz" -C "$OLLAMA_TMP_DIR/extract"
         TAR_RC=$?

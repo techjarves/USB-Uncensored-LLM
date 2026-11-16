@@ -3,7 +3,7 @@
 Portable AI Chat Server
 =======================
 A zero-dependency Python HTTP server that:
-  1. Serves the FastChatUI.html web interface
+   1. Serves the USB-LLM web UI (ui/index.html)
   2. Saves/loads chat history as JSON files on the USB drive
   3. Proxies all Ollama API requests (eliminates CORS issues)
 
@@ -13,6 +13,7 @@ Works on Windows, macOS, and Linux without installing anything.
 import http.server
 import json
 import os
+import socket
 import sys
 import urllib.request
 import urllib.error
@@ -42,12 +43,40 @@ LLAMA_CPP_MODE = "--llama-cpp" in sys.argv
 if LLAMA_CPP_MODE:
     OLLAMA_HOST = "http://127.0.0.1:8080"
 
+# Security limits
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB max body size
+
+# CORS: restrict to known local origins by default; LAN IP detected at runtime
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3333",
+    "http://127.0.0.1:3333",
+    "http://localhost:11434",
+    "http://127.0.0.1:11434",
+]
+
+# Auth token (auto-generated on first run, persisted to settings)
+AUTH_TOKEN = None
+AUTH_TOKEN_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "chat_data", ".auth_token"
+)
+
+# Rate limiting: per-IP token bucket
+RATE_LIMIT_RATE = 60        # max requests per window
+RATE_LIMIT_WINDOW = 60.0    # window in seconds
+_rate_buckets = {}           # ip -> {"tokens": float, "last_refill": float}
+_rate_lock = threading.Lock()
+
 # Always resolve paths relative to THIS script's location (the USB drive)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHATS_DIR = os.path.join(SCRIPT_DIR, "chat_data")
 CHATS_FILE = os.path.join(CHATS_DIR, "chats.json")
-SETTINGS_FILE = os.path.join(CHATS_DIR, "settings.json")
-HTML_FILE = os.path.join(SCRIPT_DIR, "FastChatUI.html")
+CONFIG_DIR = os.path.join(SCRIPT_DIR, "config")
+SETTINGS_FILE_NEW = os.path.join(CONFIG_DIR, "settings.json")
+SETTINGS_FILE_OLD = os.path.join(CHATS_DIR, "settings.json")
+# Use new path if it exists, else fall back to legacy path
+SETTINGS_FILE = SETTINGS_FILE_NEW if os.path.exists(SETTINGS_FILE_NEW) else SETTINGS_FILE_OLD
+HTML_FILE = os.path.join(SCRIPT_DIR, "ui", "index.html")
+UI_DIR = os.path.join(SCRIPT_DIR, "ui")
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "chat_server.log")
 LOG_MODE_ERRORS_ONLY = "errors_only"
@@ -185,8 +214,64 @@ def _is_log_enabled(level):
         return True
     return level >= logging.ERROR
 
+# ── Auth Token ────────────────────────────────────────────────
+def _load_or_generate_auth_token():
+    global AUTH_TOKEN
+    try:
+        os.makedirs(os.path.dirname(AUTH_TOKEN_FILE), exist_ok=True)
+        if os.path.exists(AUTH_TOKEN_FILE):
+            with open(AUTH_TOKEN_FILE, "r") as f:
+                AUTH_TOKEN = f.read().strip()
+            if AUTH_TOKEN:
+                return AUTH_TOKEN
+    except Exception:
+        pass
+    token = uuid.uuid4().hex
+    try:
+        with open(AUTH_TOKEN_FILE, "w") as f:
+            f.write(token)
+    except Exception:
+        pass
+    AUTH_TOKEN = token
+    return token
+
+def _check_auth(headers):
+    if not AUTH_TOKEN:
+        return True
+    auth_header = headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:] == AUTH_TOKEN
+    return False
+
+# ── Rate Limiting (per-IP token bucket) ───────────────────────
+def _check_rate_limit(ip):
+    now = time.time()
+    with _rate_lock:
+        bucket = _rate_buckets.get(ip)
+        if bucket is None:
+            bucket = {"tokens": RATE_LIMIT_RATE, "last_refill": now}
+            _rate_buckets[ip] = bucket
+        elapsed = now - bucket["last_refill"]
+        bucket["tokens"] = min(
+            RATE_LIMIT_RATE,
+            bucket["tokens"] + elapsed * (RATE_LIMIT_RATE / RATE_LIMIT_WINDOW),
+        )
+        bucket["last_refill"] = now
+        if bucket["tokens"] < 1:
+            return False
+        bucket["tokens"] -= 1
+        return True
+
+def _cleanup_rate_buckets():
+    now = time.time()
+    with _rate_lock:
+        stale = [ip for ip, b in _rate_buckets.items()
+                 if now - b["last_refill"] > RATE_LIMIT_WINDOW * 2]
+        for ip in stale:
+            del _rate_buckets[ip]
+
 def _load_settings_file():
-    default_settings = {
+    default_chat_settings = {
         "globalSystemPrompt": "",
         "temperature": 0.7,
         "logMode": DEFAULT_LOG_MODE,
@@ -195,21 +280,54 @@ def _load_settings_file():
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             loaded = json.load(f)
         if isinstance(loaded, dict):
-            merged = dict(default_settings)
+            # New v2 format: {"chat": {...}, "server": {...}, "ollama": {...}}
+            if "chat" in loaded and isinstance(loaded["chat"], dict):
+                merged = dict(default_chat_settings)
+                merged.update(loaded["chat"])
+                merged["logMode"] = _normalize_log_mode(merged.get("logMode"))
+                return merged
+            # Old v1 format: flat keys
+            merged = dict(default_chat_settings)
             merged.update(loaded)
             merged["logMode"] = _normalize_log_mode(merged.get("logMode"))
             return merged
     except Exception:
         pass
-    return default_settings
+    return dict(default_chat_settings)
+
+def _load_server_config():
+    """Load server-level config from settings.json (new v2 format)."""
+    try:
+        with open(SETTINGS_FILE_NEW, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            server_cfg = loaded.get("server", {})
+            ollama_cfg = loaded.get("ollama", {})
+            return server_cfg, ollama_cfg
+    except Exception:
+        pass
+    return {}, {}
 
 def _persist_settings_file(settings):
+    target = SETTINGS_FILE_NEW
     with DATA_FILE_LOCK:
-        temp_file = SETTINGS_FILE + ".tmp"
+        # Merge chat settings into v2 format if file exists, else write flat
+        existing = {}
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+        if isinstance(existing, dict) and "chat" in existing:
+            existing["chat"].update(settings)
+            output = existing
+        else:
+            output = {"chat": settings, "server": {}, "ollama": {}}
+        temp_file = target + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
+            json.dump(output, f, ensure_ascii=False, indent=2)
             f.flush()
-        os.replace(temp_file, SETTINGS_FILE)
+        os.replace(temp_file, target)
 
 def _set_active_log_mode(mode):
     global ACTIVE_LOG_MODE
@@ -427,6 +545,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
     def _read_body(self):
         length = _safe_int(self.headers.get("Content-Length"), 0)
+        if length > MAX_REQUEST_BODY_BYTES:
+            raise ValueError(f"Request body too large ({length} bytes)")
         return self.rfile.read(length) if length > 0 else b""
 
     def log_message(self, format, *args):
@@ -443,10 +563,57 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         print(f"{prefix} {ts}  {msg}")
 
     # ── CORS headers ───────────────────────────────────────────
+    def _is_allowed_origin(self, origin):
+        if not origin:
+            return False
+        if origin in CORS_ALLOWED_ORIGINS:
+            return True
+        # Allow local LAN IPs detected at runtime
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            lan_origin = f"http://{local_ip}:{CHAT_SERVER_PORT}"
+            return origin == lan_origin
+        except Exception:
+            return False
+
+    def _sanitize_header_value(self, value):
+        """Remove CR/LF to prevent HTTP response splitting via header values."""
+        if not isinstance(value, str):
+            return ""
+        return value.replace("\r", "").replace("\n", "").strip()
+
     def _cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self._sanitize_header_value(self.headers.get("Origin", ""))
+        if self._is_allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    def _check_request(self):
+        """Enforce rate limit and auth. Returns True if request should proceed."""
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        if not _check_rate_limit(client_ip):
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Too many requests. Slow down."}).encode())
+            return False
+
+        path = urlparse(self.path).path
+        # Auth only enforced for /api/* routes; static assets open
+        if path.startswith("/api/") and path != "/api/token":
+            if not _check_auth(self.headers):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Unauthorized. Provide Bearer token."}).encode())
+                return False
+        return True
 
     def do_OPTIONS(self):
         """Handle CORS preflight."""
@@ -456,6 +623,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
     # ── Routing ────────────────────────────────────────────────
     def do_GET(self):
+        if not self._check_request():
+            return
         path = urlparse(self.path).path
 
         # Serve the main UI
@@ -470,6 +639,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/settings":
             self._get_settings()
 
+        # Auth token (unauthenticated — needed by the JS to auth API calls)
+        elif path == "/api/token":
+            self._get_auth_token()
+
         # Hardware stats API
         elif path == "/api/stats":
             self._get_stats()
@@ -483,6 +656,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._serve_static(path)
 
     def do_POST(self):
+        if not self._check_request():
+            return
         path = urlparse(self.path).path
 
         if path == "/api/chats":
@@ -501,6 +676,8 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_DELETE(self):
+        if not self._check_request():
+            return
         path = urlparse(self.path).path
         if path.startswith("/ollama/"):
             self._proxy_ollama("DELETE")
@@ -522,37 +699,35 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"FastChatUI.html not found.")
+            self.wfile.write(b"index.html not found in ui/ directory.")
 
     def _serve_static(self, path):
-        """Serve static files (CSS, JS, images) from SCRIPT_DIR."""
+        """Serve static files from SCRIPT_DIR or UI_DIR."""
         safe_path = os.path.normpath(path.lstrip("/"))
-        full_path = os.path.join(SCRIPT_DIR, safe_path)
 
-        # Security: don't allow path traversal
-        if not full_path.startswith(SCRIPT_DIR):
-            self.send_response(403)
-            self.end_headers()
-            return
+        # Try SCRIPT_DIR first, then UI_DIR
+        for base_dir in (SCRIPT_DIR, UI_DIR):
+            full_path = os.path.join(base_dir, safe_path)
+            if full_path.startswith(base_dir) and os.path.isfile(full_path):
+                ext = os.path.splitext(full_path)[1].lower()
+                mime_types = {
+                    ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
+                    ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+                    ".svg": "image/svg+xml", ".ico": "image/x-icon",
+                ".woff2": "font/woff2", ".woff": "font/woff"
+                }
+                content_type = mime_types.get(ext, "application/octet-stream")
+                with open(full_path, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
-        if os.path.isfile(full_path):
-            ext = os.path.splitext(full_path)[1].lower()
-            mime_types = {
-                ".html": "text/html", ".css": "text/css", ".js": "application/javascript",
-                ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
-                ".svg": "image/svg+xml", ".ico": "image/x-icon"
-            }
-            content_type = mime_types.get(ext, "application/octet-stream")
-            with open(full_path, "rb") as f:
-                content = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self._cors_headers()
-            self.end_headers()
-            self.wfile.write(content)
-        else:
-            self.send_response(404)
-            self.end_headers()
+        self.send_response(404)
+        self.end_headers()
 
     # ── Chat Persistence ───────────────────────────────────────
     def _get_chats(self):
@@ -574,9 +749,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
     def _save_chats(self):
         request_context = self._build_request_context("/api/chats")
-        body = self._read_body()
         try:
+            body = self._read_body()
             chats = json.loads(body)
+            if not isinstance(chats, list):
+                raise ValueError("Chat data must be a JSON array")
             with DATA_FILE_LOCK:
                 temp_file = CHATS_FILE + ".tmp"
                 with open(temp_file, "w", encoding="utf-8") as f:
@@ -612,11 +789,16 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
     def _save_settings(self):
         request_context = self._build_request_context("/api/settings")
-        body = self._read_body()
         try:
+            body = self._read_body()
             incoming = json.loads(body)
             if not isinstance(incoming, dict):
                 raise ValueError("Settings payload must be a JSON object")
+
+            ALLOWED_SETTINGS = {"globalSystemPrompt", "temperature", "logMode"}
+            for key in incoming:
+                if key not in ALLOWED_SETTINGS:
+                    raise ValueError(f"Unknown setting: {key}")
 
             settings = _load_settings_file()
             settings.update(incoming)
@@ -635,6 +817,15 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._cors_headers()
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    # ── Auth Token ────────────────────────────────────────────
+    def _get_auth_token(self):
+        """Return the current auth token for the frontend to use."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps({"token": AUTH_TOKEN or ""}).encode())
 
     # ── Hardware Stats ─────────────────────────────────────────
     def _get_stats(self):
@@ -878,19 +1069,42 @@ class ThreadedHTTPServer(http.server.HTTPServer):
 HOST_HARDWARE_SPECS = _get_hardware_specs()
 LOGGER, LOG_LISTENER = configure_logging()
 
+# Periodic rate-limit bucket cleanup thread
+def _rate_cleanup_loop():
+    while True:
+        time.sleep(300)
+        _cleanup_rate_buckets()
+
+threading.Thread(target=_rate_cleanup_loop, daemon=True).start()
+
 def open_browser_delayed():
     """Open the browser after a short delay to ensure server is ready."""
     time.sleep(1.0)
     webbrowser.open(f"http://localhost:{CHAT_SERVER_PORT}")
 
+def _apply_server_config():
+    """Override module-level config from Shared/config/settings.json (if available)."""
+    global CHAT_SERVER_PORT, OLLAMA_HOST
+    server_cfg, ollama_cfg = _load_server_config()
+    port = server_cfg.get("port")
+    if port and isinstance(port, int) and 1024 <= port <= 65535:
+        CHAT_SERVER_PORT = port
+    bind = server_cfg.get("bind", "0.0.0.0")
+    o_host = ollama_cfg.get("host", "127.0.0.1")
+    o_port = ollama_cfg.get("port", 11434)
+    OLLAMA_HOST = f"http://{o_host}:{o_port}"
+
 def main():
     ensure_data_dir()
+    _apply_server_config()
     _set_active_log_mode(_load_settings_file().get("logMode"))
+
+    # Load/generate auth token
+    token = _load_or_generate_auth_token()
     
     # Try to find the local LAN IP
     local_ip = "127.0.0.1"
     try:
-        import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
@@ -906,6 +1120,9 @@ def main():
     print(f"  Local Access:    http://localhost:{CHAT_SERVER_PORT}")
     print(f"  Network Access:  http://{local_ip}:{CHAT_SERVER_PORT}   <-- Use this on phone/other PC!")
     print(f"  Ollama/Llama Proxy: {OLLAMA_HOST}")
+    if AUTH_TOKEN:
+        print(f"  Auth Token:      {AUTH_TOKEN}")
+        print("  (Send as: Authorization: Bearer <token> in request headers)")
     if LLAMA_CPP_MODE:
         print("  Running in LLAMA_CPP_MODE (Translating API requests)")
     print()
@@ -914,7 +1131,9 @@ def main():
     print()
     print("-" * 55)
 
-    server = ThreadedHTTPServer(("0.0.0.0", CHAT_SERVER_PORT), ChatHandler)
+    server_cfg, _ = _load_server_config()
+    bind_addr = server_cfg.get("bind", "0.0.0.0")
+    server = ThreadedHTTPServer((bind_addr, CHAT_SERVER_PORT), ChatHandler)
 
     # Open browser in background thread
     if "--no-browser" not in sys.argv:

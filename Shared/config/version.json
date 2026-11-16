@@ -1,0 +1,11 @@
+{
+  "project_version": "2.0.0",
+  "ollama_version": "latest (auto-detected from GitHub releases)",
+  "python_version": "3.12.x (bundled from python.org)",
+  "last_updated": "2026-06-16",
+  "changelog": [
+    "2.0.0 - Security hardening: auth token, CORS restriction, rate limiting, XSS sanitization, SHA256 verification",
+    "2.0.0 - Documentation: security considerations section, updated model catalog, folder architecture",
+    "2.0.0 - Architecture: centralized config files, migration script, version tracking"
+  ]
+}

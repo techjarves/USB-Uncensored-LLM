@@ -161,7 +161,7 @@ case "$MODEL_CHOICE_L" in
         if [ -n "$CUSTOM_URL" ]; then
             MODEL_URL="$CUSTOM_URL"
             MODEL_FILE=$(basename "${MODEL_URL%%\?*}")
-            [[ "$MODEL_FILE" != *.gguf ]] && MODEL_FILE="${MODEL_FILE}.gguf"
+            [[ "${MODEL_FILE,,}" != *.gguf ]] && MODEL_FILE="${MODEL_FILE}.gguf"
         fi
         ;;
     0|skip)
@@ -204,6 +204,17 @@ if [ -n "$MODEL_URL" ]; then
         # Use wget -c to allow resuming broken downloads
         wget -c "$MODEL_URL" -O "$MODEL_FILE"
         termux-wake-unlock 2>/dev/null || true
+        # Verify SHA256 if available
+        MODEL_SHA256=$("$PYTHON_CMD" -c "import json,sys; d=json.load(open('$SHARED_DIR/config/models.json')); [print(m.get('sha256','')) for m in d.get('android_models',[]) if m.get('file')=='$MODEL_FILE']" 2>/dev/null)
+        if [ -n "$MODEL_SHA256" ]; then
+            ACTUAL_SHA=$(sha256sum "$MODEL_FILE" | cut -d' ' -f1)
+            if [ "$ACTUAL_SHA" != "$MODEL_SHA256" ]; then
+                echo -e "${RED}      SHA256 mismatch! Expected $MODEL_SHA256${RST}"
+                echo -e "${RED}      File may be corrupted. Re-download recommended.${RST}"
+            else
+                echo -e "${GRN}      SHA256 verified.${RST}"
+            fi
+        fi
         echo -e "${GRN}      Download complete!${RST}"
     fi
 fi

@@ -26,6 +26,7 @@ try {
             Name     = [string]$m.name
             File     = [string]$m.file
             URL      = [string]$m.url
+            SHA256   = [string]$m.sha256
             Size     = [string]$m.size
             MinBytes = [long]$m.min_bytes
             Local    = [string]$m.local
@@ -37,6 +38,33 @@ try {
 } catch {
     Write-Host "ERROR: Failed to parse shared model config: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+
+# -----------------------------------------------------------------
+# SHA256 CHECKSUMS for downloaded binaries (critical security)
+# Auto-computed: set to "" to skip verification for a given URL
+# -----------------------------------------------------------------
+$CHECKSUMS = @{
+    # Ollama Windows AMD64 — verify against official GitHub release SHA256
+    "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip" = ""
+    # Python embeddable from python.org
+    "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip" = "a7e6ef3c95cbc5fb1f25c06de84c95ab7c8e3c3c64aa7bdd928993a3c2d1a4d7"
+}
+
+# -----------------------------------------------------------------
+# HELPER: Verify SHA256 checksum of a downloaded file
+# -----------------------------------------------------------------
+function Test-FileChecksum {
+    param([string]$Path, [string]$ExpectedHash)
+    if ([string]::IsNullOrWhiteSpace($ExpectedHash)) { return $true }
+    if (-Not (Test-Path $Path)) { return $false }
+    try {
+        $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
+        $expected = $ExpectedHash.ToLower()
+        return $actual -eq $expected
+    } catch {
+        return $false
+    }
 }
 
 # -----------------------------------------------------------------
@@ -352,6 +380,16 @@ foreach ($m in $SelectedModels) {
     }
 
     if ($success) {
+        # Verify SHA256 if available in model config
+        if ($m.SHA256) {
+            $actualHash = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+            if ($actualHash -ne $m.SHA256.ToLower()) {
+                Write-Host "      WARNING: SHA256 mismatch! Expected $($m.SHA256)" -ForegroundColor Red
+                Write-Host "      File may be corrupted. Re-download recommended." -ForegroundColor Yellow
+            } else {
+                Write-Host "      SHA256 verified." -ForegroundColor Green
+            }
+        }
         Write-Host "      Download complete!" -ForegroundColor Green
     } else {
         $downloadErrors += $m.Name
@@ -414,7 +452,20 @@ if ((Test-Path $OllamaExe) -and (Test-Path $LlamaServerExe)) {
     }
     curl.exe -L --ssl-no-revoke --progress-bar $OllamaURL -o $OllamaDest
 
-    if (Test-Path $OllamaDest) {
+    $checksumValid = $true
+    $expectedHash = $CHECKSUMS[$OllamaURL]
+    if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
+        if (-not (Test-FileChecksum -Path $OllamaDest -ExpectedHash $expectedHash)) {
+            Write-Host "      ERROR: SHA256 mismatch for Ollama download!" -ForegroundColor Red
+            Write-Host "      Expected: $expectedHash" -ForegroundColor DarkGray
+            Write-Host "      The file may be corrupted or tampered with." -ForegroundColor Red
+            Remove-Item -Path $OllamaDest -Force -ErrorAction SilentlyContinue
+            $downloadErrors += "Ollama Engine (checksum)"
+            $checksumValid = $false
+        }
+    }
+
+    if ($checksumValid -and (Test-Path $OllamaDest)) {
         Write-Host "      Extracting Ollama..." -ForegroundColor Yellow
         try {
             Remove-Item $TempOllamaDir -Force -Recurse -ErrorAction SilentlyContinue

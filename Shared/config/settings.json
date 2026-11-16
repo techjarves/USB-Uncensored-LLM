@@ -1,0 +1,17 @@
+{
+  "server": {
+    "port": 3333,
+    "bind": "0.0.0.0",
+    "enable_lan_access": true,
+    "log_level": "INFO"
+  },
+  "chat": {
+    "globalSystemPrompt": "",
+    "temperature": 0.7,
+    "logMode": "errors_only"
+  },
+  "ollama": {
+    "host": "127.0.0.1",
+    "port": 11434
+  }
+}
